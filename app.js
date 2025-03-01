@@ -1,3 +1,9 @@
+if(process.env.NODE_ENV!="production"){
+    require('dotenv').config()
+}
+
+
+
 const express = require("express");
 const app = express();
 const mongoose = require("mongoose");
@@ -15,30 +21,61 @@ const flash=require("connect-flash")
 const passport=require("passport");
 const LocalStrategy=require("passport-local");
 const User=require("./models/user.js");
-const {isLoggedIn, saveRedirectUrl}=require("./models/middleware.js");
+const {isLoggedIn, saveRedirectUrl, isOwner,isReviewAuthor}=require("./models/middleware.js");
+const multer  = require('multer')
+const { storage} = require("./cloudConfig.js")
+const upload = multer({ storage})
+const MongoStore = require("connect-mongo");
+
+const listingController = require("./controllers/listings.js");  // ✅ Correct path
+const reviewController = require("./controllers/reviews.js");
+const userController = require("./controllers/users.js");
 
 
 
 
-const mongo_url = "mongodb://127.0.0.1:27017/wanderlust";
-const sessionOptions={
-    secret:"mysupersecretstring",
-     resave:false,
-     saveUninitialized:true,
-     cookie:{
-        expires:Date.now()+7*24*60*60*1000,
-        maxAge:7*24*60*60*1000,
-         httpOnly:true,
 
-     }
 
-}
+
+
+// const mongo_url = "mongodb://127.0.0.1:27017/wanderlust";
+  const db_url = process.env.ATLAS_DB ;
+  const store=MongoStore.create({
+    mongoUrl:db_url,
+    crypto:{
+        secret: "mysupersecretstring",
+    },
+    touchAfter:24*3600
+
+})
+
+const sessionOptions = {
+    secret: process.env.SECRET,
+    resave: false,
+    saveUninitialized: false,
+    store:store,
+    
+    cookie: {
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        httpOnly: true,
+    }
+};
+
+
+app.use(session(sessionOptions));
+app.use(flash());
+
+app.use(passport.initialize());
+app.use(passport.session())
+passport.use(new LocalStrategy(User.authenticate()));
 
 
 
 async function main() {
-    await mongoose.connect(mongo_url);
+    await mongoose.connect(db_url);
 }
+main().catch(err => console.log("❌ MongoDB Connection Error:", err));
+
 
 main()
     .then(() => console.log("Connected to DB"))
@@ -57,23 +94,26 @@ app.use(methodOverride("_method"))
 app.engine("ejs",ejsMate);
 app.use(express.static(path.join( __dirname,"public")));
 app.use(cookieParser());
- 
-app.get("/", (req, res) => {
-    res.send("Hello world");
-    req.time=new Date(Date.now()).toString();
-
-    console.log(req.time)
-}); 
-
-app.use(session(sessionOptions));
-app.use(flash());
-
-app.use(passport.initialize());
-app.use(passport.session())
-passport.use(new LocalStrategy(User.authenticate()));
 
 passport.serializeUser(User.serializeUser());
 passport.deserializeUser(User.deserializeUser());
+
+app.use((req, res, next) => {
+    console.log("🔹 Session Data:", req.session);
+    console.log("🔹 Authenticated User:", req.user ? req.user.username : "Not logged in");
+    console.log("🔹 Session User ID:", req.session.passport ? req.session.passport.user : "No session user");
+    next();
+});
+
+
+
+// app.get("/", (req, res) => {
+//     res.send("Hello world");
+//     req.time=new Date(Date.now()).toString();
+
+//     console.log(req.time)
+// }); 
+
 
 app.use( (req,res,next)=>{
     res.locals.success=req.flash("success");
@@ -103,148 +143,38 @@ const validateReview=(req,res,next)=>{
         next();
     }
 }
-app.get("/signup",(req,res)=>{
-    res.render("users/signup.ejs")
-})
-app.post("/signup",wrapAsync(async(req,res)=>{
-    try{
-        let { email,password,username}= req.body;
-        const newUser=new User({email,username})
-        const registeredUser=await User.register(newUser,password);
-        console.log(registeredUser)
-        req.login( registeredUser,(err)=>{
-            if(err){
-                return next(err)
-            }
-        req.flash("success","Welcome to Wanderlust!");
-        res.redirect("/listings");
-        })
-       
-    }catch(e){
-        req.flash("error",e.message);
-        res.redirect("/signup")
-    }
-   
-}))
-app.get("/login",(req,res)=>{
-    res.render("users/login.ejs")
-})
-app.post("/login",saveRedirectUrl ,passport.authenticate("local",{ failureRedirect: '/login',failureFlash:true }),async(req,res)=>{
-    req.flash("success","Welcome to Wanderlust!");
-  res.redirect(res.locals.redirectUrl || "/listings")
-   
-})
-app.get("/logout",(req,res,next)=>{
-    req.logout((err)=>{
-        if(err){
-            return next(err);
-        }
-        req.flash("success","Logged out successfully");
-        res.redirect("/listings");
-    });
-    
-})
 
-// app.get("/demouser",async(req,res)=>{
-//     let fakeUser=new User({
-//         email:"student @gmail.com ",
-//         username:"delta-student",
-//     })
-//     let registeredUser=await User.register(fakeUser,"helloWorld");
-//     res.send(registeredUser);
+app.get("/signup",userController.RenderSignup)  
+app.post("/signup",wrapAsync(userController.signUp))
+app.get("/login", userController.RenderLogin);
+app.post("/login", passport.authenticate("local", { failureRedirect: "/login", failureFlash: true }), saveRedirectUrl, userController.login);
+app.get("/logout",userController.logOut)
 
-// })
+
 // index route
-app.get("/listings",wrapAsync(async(req,res)=>{
-    const allListings=await Listing.find({});
-    res.render("listings/index.ejs",{allListings});
-    
-    
-}))
+app.get("/listings",wrapAsync(listingController.index))
 //new route
-app.get("/listings/new",isLoggedIn ,wrapAsync(async(req,res)=>{
-    
-    res.render("listings/new.ejs");
-    
-}))
+app.get("/listings/new",isLoggedIn ,wrapAsync(listingController.newForm))
 //show route
-app.get("/listings/:id",wrapAsync(async(req,res)=>{
-    let {id}=req.params;
-    const listing=await Listing.findById(id).populate('reviews');
-     if(!listing){
-        req.flash("error"," Listing does not exist!")
-        res.redirect("/listings")
-     }
-    res.render("listings/show.ejs",{listing});
-
-}))
+app.get("/listings/:id",wrapAsync(listingController.showRoute))
 //create a post
-app.post("/listings",isLoggedIn,validateListing,wrapAsync(async(req,res, next)=>{
-   
-    if(!req.body.listing){
-        throw new ExpressError(400,"send valid data  for listing")
-    }
-        let Newlisting=new Listing(req.body.listing);
-        await Newlisting.save();
+app.post("/listings",isLoggedIn,upload.single('listing[image]'),validateListing,wrapAsync(listingController.createPost)) ;
 
-        req.flash("success","New Listing is Created!")
 
-        res.redirect("/listings");
-   
-  
-}))
-app.get("/listings/:id/edit",isLoggedIn ,wrapAsync(async(req,res)=>{
-    let {id}=req.params;
-    const listing=await Listing.findById(id)
-    if(!listing){
-        req.flash("error"," Listing does not exist!")
-        res.redirect("/listings")
-     }
-    res.render("listings/edit.ejs",{listing});
-}))
-app.put("/listings/:id",isLoggedIn,validateListing,wrapAsync(async(req,res)=>{
-    let {id}=req.params;
-    await Listing.findByIdAndUpdate(id,{...req.body.listing});
-    req.flash("success"," Listing is Updated!")
-    res.redirect(`/listings/${id}`)
-}))
+app.get("/listings/:id/edit",isLoggedIn ,isOwner,wrapAsync(listingController.editForm))
+
+app.put("/listings/:id",isLoggedIn,isOwner,upload.single('listing[image]'),validateListing,wrapAsync(listingController.updatePost))
 //delete route
-app.delete("/listings/:id",isLoggedIn,wrapAsync(async(req,res)=>{
-    let {id}=req.params;
-    let deleted=await Listing.findByIdAndDelete(id);
-    console.log(deleted);
-    req.flash("success","New Listing is Deleted")
-    res.redirect("/listings");
-}))
+app.delete("/listings/:id",isLoggedIn,isOwner,wrapAsync(listingController.deleteRoute))
 //reviews
-app.post("/listings/:id/reviews",validateReview,wrapAsync(async(req,res)=>{
-    let listing=await Listing.findById( req.params.id);
-    let newReview=new Review(req.body.review);
-    listing.reviews.push(newReview);
-    await newReview.save();
-    await listing.save();
-    console.log("new review saved ")
-    req.flash("success","new review is Created!")
-    res.redirect(`/listings/${listing._id}`)
-
-}))
+app.post("/listings/:id/reviews",isLoggedIn,validateReview,wrapAsync(reviewController.createReview))
 //delete review
- app.delete("/listings/:id/reviews/:review_id",wrapAsync(async(req,res)=>{
-    let {id,review_id}=req.params;
-    await Listing.findByIdAndUpdate(id,{$pull:{reviews: review_id}})
-     await Review.findByIdAndDelete(review_id);
-     req.flash("success","Your review is Deleted!")
-     res.redirect(`/listings/${id}`)
-
- }))
+ app.delete("/listings/:id/reviews/:review_id",isLoggedIn,isReviewAuthor,wrapAsync(reviewController.deleteReview))
 app.all("*",(req,res,next)=>{
     next(new ExpressError(404,"something went wrong "))
 })
 app.use((err, req, res, next) => {
-    const { statusCode = 500, message = errmsg } = err;
+    const { statusCode = 500, message = "somthing went wrong" } = err;
     res.status(statusCode).render("error.ejs", { statusCode, message });
 });
-
-
-
-
+ 

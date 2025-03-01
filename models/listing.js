@@ -9,8 +9,9 @@ const listingSchema = new Schema({ // Directly using mongoose.Schema
     description: String,
     price: Number,
     image: {  // Change from String to an object
-        filename: String,
-        url: String
+       url:String,
+       filename:String,
+       
     },
     location: String,
     country: String,
@@ -21,13 +22,14 @@ const listingSchema = new Schema({ // Directly using mongoose.Schema
 
         },
     ],
-    owner:[
+    owner:
         {
             type:Schema.Types.ObjectId,
             ref: "User" // Ensure the reference matches the model name exactly
 
-        }
-    ]
+        },
+        
+    
 
 });
 listingSchema.post("findOneAndDelete",async(listing)=>{
